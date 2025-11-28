@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dino Juego - Controlado por Voz</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            font-family: 'Press Start 2P', cursive;
+            background-color: #f7f7f7;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            color: #535353;
+        }
+
+        h1 {
+            font-size: 20px;
+            margin-bottom: 10px;
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        #game-container {
+            position: relative;
+            width: 800px;
+            height: 300px;
+            background-color: white;
+            border-bottom: 2px solid #535353;
+            overflow: hidden;
+        }
+
+        #status-bar {
+            margin-top: 20px;
+            padding: 10px;
+            background: #e0e0e0;
+            border-radius: 5px;
+            font-size: 12px;
+            width: 800px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .bar-container {
+            width: 200px;
+            height: 20px;
+            background-color: #ddd;
+            border: 1px solid #999;
+            position: relative;
+        }
+
+        #clap-bar {
+            height: 100%;
+            width: 0%;
+            background-color: #4CAF50; /* Verde cuando detecta */
+            transition: width 0.1s;
+        }
+
+        #start-btn {
+            margin-top: 20px;
+            padding: 15px 30px;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 16px;
+            background-color: #535353;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+
+        #start-btn:hover {
+            background-color: #333;
+        }
+
+        #start-btn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* Elementos del juego */
+        #dino {
+            position: absolute;
+            bottom: 0;
+            left: 50px;
+            font-size: 40px; /* Tamaño del emoji */
+            line-height: 40px;
+        }
+
+        .cactus {
+            position: absolute;
+            bottom: 0;
+            font-size: 30px;
+            line-height: 30px;
+        }
+
+        #score {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 14px;
+        }
+
+        #message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>👏 ¡Aplaude para saltar! 🦖</h1>
+
+    <div id="game-container">
+        <div id="score">Score: 0</div>
+        <div id="dino">🦖</div>
+        <div id="message">GAME OVER<br>Presiona Iniciar para jugar de nuevo</div>
+    </div>
+
+    <div id="status-bar">
+        <span id="status-text">Esperando inicio...</span>
+        <div style="display:flex; align-items:center; gap: 10px;">
+            <span>Nivel de Aplauso:</span>
+            <div class="bar-container">
+                <div id="clap-bar"></div>
+            </div>
+        </div>
+    </div>
+
+    <button id="start-btn" onclick="init()">INICIAR MICRÓFONO Y JUEGO</button>
+
+    <!-- Librerías de TensorFlow.js y Teachable Machine -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
+
+    <script type="text/javascript">
+        // ---------------------------------------------------------
+        // CONFIGURACIÓN DEL MODELO (¡PEGA TU URL AQUÍ!)
+        // ---------------------------------------------------------
+        // Ejemplo: "https://teachablemachine.withgoogle.com/models/AbCdEfGh/"
+        const URL = "https://teachablemachine.withgoogle.com/models/SIm4gQPkS/"; 
+        
+        // Configuración de la IA
+        const CLAP_CLASS_NAME = "Aplauso"; // Debe coincidir EXACTAMENTE con tu nombre en Teachable Machine
+        const PROBABILITY_THRESHOLD = 0.85; // Sensibilidad (0.85 = 85% de seguridad)
+
+        let recognizer;
+        let isListening = false;
+
+        // Variables del Juego
+        const dino = document.getElementById("dino");
+        const gameContainer = document.getElementById("game-container");
+        const scoreElement = document.getElementById("score");
+        const messageElement = document.getElementById("message");
+        const startBtn = document.getElementById("start-btn");
+        const clapBar = document.getElementById("clap-bar");
+        const statusText = document.getElementById("status-text");
+
+        let isJumping = false;
+        let gravity = 0.9;
+        let position = 0;
+        let velocity = 0; // Velocidad vertical
+        let isGameOver = false;
+        let score = 0;
+        let gameLoopId;
+        let obstacleTimerId;
+
+        // ---------------------------------------------------------
+        // LÓGICA DE INTELIGENCIA ARTIFICIAL (AUDIO)
+        // ---------------------------------------------------------
+        async function createModel() {
+            if(URL === "TU_URL_DE_TEACHABLE_MACHINE_AQUI") {
+                alert("⚠️ ¡ATENCIÓN! ⚠️\n\nNo has puesto la URL de tu modelo.\n\nEdita el código y busca la variable 'URL' al principio del script.");
+                return null;
+            }
+
+            const checkpointURL = URL + "model.json"; // Definición de la arquitectura
+            const metadataURL = URL + "metadata.json"; // Metadatos (nombres de clases)
+
+            statusText.innerText = "Cargando modelo de IA...";
+            
+            try {
+                const recognizer = speechCommands.create(
+                    "BROWSER_FFT", // Tipo de transformada de Fourier
+                    undefined, // Vocabulario (no necesario aquí)
+                    checkpointURL,
+                    metadataURL);
+
+                await recognizer.ensureModelLoaded();
+                return recognizer;
+            } catch (e) {
+                alert("Error cargando el modelo. Verifica que la URL sea correcta.");
+                console.error(e);
+                return null;
+            }
+        }
+
+        async function init() {
+            startBtn.disabled = true;
+            
+            if (!recognizer) {
+                recognizer = await createModel();
+                if(!recognizer) {
+                    startBtn.disabled = false;
+                    return;
+                }
+            }
+
+            // Configuramos la escucha del micrófono
+            const classLabels = recognizer.wordLabels(); // Obtiene ["Ruido de fondo", "Aplauso"]
+            statusText.innerText = "Escuchando... ¡Aplaude!";
+
+            if(!isListening) {
+                recognizer.listen(result => {
+                    const scores = result.scores; // Array de probabilidades
+                    
+                    // Buscamos el índice de la clase "Aplauso"
+                    // Si tu clase se llama diferente, ajusta CLAP_CLASS_NAME arriba
+                    let clapIndex = -1;
+                    for (let i = 0; i < classLabels.length; i++) {
+                        if (classLabels[i] === CLAP_CLASS_NAME) {
+                            clapIndex = i;
+                            break;
+                        }
+                    }
+
+                    // Si no encuentra el nombre exacto, intentamos asumir que es la clase 1 (la segunda)
+                    if (clapIndex === -1 && classLabels.length > 1) {
+                         // Fallback: Asumimos que la clase 0 es ruido y la 1 es acción
+                         clapIndex = 1; 
+                    }
+
+                    const clapScore = scores[clapIndex];
+
+                    // Visualización de la barra
+                    clapBar.style.width = (clapScore * 100) + "%";
+
+                    // DETECTAR SALTO
+                    if (clapScore >= PROBABILITY_THRESHOLD) {
+                        jump();
+                    }
+
+                }, {
+                    includeSpectrogram: false, // No necesitamos gráficos complejos
+                    probabilityThreshold: 0.75,
+                    invokeCallbackOnNoiseAndUnknown: true,
+                    overlapFactor: 0.50 // Qué tan frecuente analiza (0.5 es un buen balance)
+                });
+                isListening = true;
+            }
+
+            startGame();
+        }
+
+        // ---------------------------------------------------------
+        // LÓGICA DEL JUEGO
+        // ---------------------------------------------------------
+        function startGame() {
+            // Reset variables
+            isGameOver = false;
+            score = 0;
+            scoreElement.innerText = "Score: " + score;
+            messageElement.style.display = "none";
+            startBtn.style.display = "none"; // Ocultar botón durante el juego
+            
+            // Limpiar obstáculos anteriores
+            const oldCactus = document.querySelectorAll('.cactus');
+            oldCactus.forEach(c => c.remove());
+
+            // Loop principal
+            gameLoopId = requestAnimationFrame(updateGame);
+            // Generar obstáculos
+            obstacleTimerId = setInterval(createCactus, Math.random() * 2000 + 1500); // Aleatorio entre 1.5s y 3.5s
+        }
+
+        function jump() {
+            if (!isJumping && !isGameOver) {
+                isJumping = true;
+                velocity = 22; // Fuerza del salto hacia arriba (valor positivo para lógica de resta abajo)
+                
+                // Efecto visual rápido
+                dino.style.filter = "brightness(1.5)";
+                setTimeout(() => dino.style.filter = "none", 200);
+            }
+        }
+
+        function updateGame() {
+            if (isGameOver) return;
+
+            // Físicas del salto
+            // En HTML coords, bottom:0 es el suelo. Subir es aumentar bottom.
+            if (isJumping) {
+                position += velocity; // Subimos
+                velocity -= gravity; // La gravedad reduce la velocidad
+                
+                // Si tocamos el suelo
+                if (position <= 0) {
+                    position = 0;
+                    isJumping = false;
+                    velocity = 0;
+                }
+                
+                dino.style.bottom = position + 'px';
+            }
+
+            // Score
+            score++;
+            if(score % 10 === 0) { // Actualizar texto cada 10 frames para no parpadear
+                scoreElement.innerText = "Score: " + Math.floor(score / 10);
+            }
+
+            // Mover obstáculos y detectar colisión
+            const cacti = document.querySelectorAll('.cactus');
+            cacti.forEach(cactus => {
+                let cactusPos = parseInt(window.getComputedStyle(cactus).getPropertyValue('right'));
+                
+                // Mover cactus hacia la izquierda (aumentando right)
+                // Velocidad aumenta ligeramente con el tiempo
+                let speed = 5 + (score / 1000); 
+                cactus.style.right = (cactusPos + speed) + 'px';
+
+                // Eliminar si sale de pantalla
+                if (cactusPos > 850) {
+                    cactus.remove();
+                }
+
+                // COLISIÓN
+                // El dino está a left: 50px.
+                // El contenedor mide 800px.
+                // Cactus right X significa left = 800 - X.
+                let cactusLeft = 800 - cactusPos - 30; // 30 ancho aprox
+                
+                // Dino es aprox 40x40. Cactus aprox 30x30
+                // Colisión simple AABB
+                if (cactusLeft > 50 && cactusLeft < 90 && position < 35) {
+                    gameOver();
+                }
+            });
+
+            gameLoopId = requestAnimationFrame(updateGame);
+        }
+
+        function createCactus() {
+            if (isGameOver) return;
+            
+            const cactus = document.createElement('div');
+            cactus.classList.add('cactus');
+            cactus.innerHTML = '🌵';
+            cactus.style.right = '-50px'; // Empezar fuera a la derecha
+            gameContainer.appendChild(cactus);
+        }
+
+        function gameOver() {
+            isGameOver = true;
+            cancelAnimationFrame(gameLoopId);
+            clearInterval(obstacleTimerId);
+            
+            messageElement.style.display = "block";
+            startBtn.style.display = "block";
+            startBtn.innerText = "JUGAR DE NUEVO";
+            startBtn.disabled = false;
+            statusText.innerText = "Juego terminado. Aplaude para intentar de nuevo.";
+        }
+
+    </script>
+</body>
+</html>
